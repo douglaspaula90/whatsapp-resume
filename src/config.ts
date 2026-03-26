@@ -19,8 +19,8 @@ export const config = {
     instanceName: optional('EVOLUTION_INSTANCE_NAME', 'whatsapp-resume'),
   },
   whatsappGroups: required('WHATSAPP_GROUPS').split(',').map(g => g.trim()),
-  anthropic: {
-    apiKey: required('ANTHROPIC_API_KEY'),
+  openai: {
+    apiKey: required('OPENAI_API_KEY'),
   },
   email: {
     from: required('EMAIL_FROM'),

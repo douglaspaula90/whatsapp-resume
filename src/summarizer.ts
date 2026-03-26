@@ -1,8 +1,8 @@
-import Anthropic from '@anthropic-ai/sdk';
+import OpenAI from 'openai';
 import { config } from './config';
 import { Message } from './database';
 
-const client = new Anthropic({ apiKey: config.anthropic.apiKey });
+const client = new OpenAI({ apiKey: config.openai.apiKey });
 
 export interface GroupSummary {
   groupJid: string;
@@ -37,15 +37,17 @@ export async function summarizeGroup(groupName: string, groupJid: string, messag
   const firstTimestamp = messages[0].timestamp;
   const lastTimestamp = messages[messages.length - 1].timestamp;
 
-  const response = await client.messages.create({
-    model: 'claude-sonnet-4-6-20250514',
+  const response = await client.chat.completions.create({
+    model: 'gpt-4o-mini',
     max_tokens: 4096,
     messages: [
       {
+        role: 'system',
+        content: 'Você é um assistente que resume conversas de grupos de WhatsApp. Responda sempre em português brasileiro.',
+      },
+      {
         role: 'user',
-        content: `Você é um assistente que resume conversas de grupos de WhatsApp.
-
-Analise as mensagens abaixo do grupo "${groupName}" e crie um resumo estruturado.
+        content: `Analise as mensagens abaixo do grupo "${groupName}" e crie um resumo estruturado.
 
 REGRAS:
 1. Agrupe as mensagens por TÓPICO/ASSUNTO discutido
@@ -67,7 +69,7 @@ Gere o resumo em HTML:`,
     ],
   });
 
-  const summaryText = response.content[0].type === 'text' ? response.content[0].text : '';
+  const summaryText = response.choices[0]?.message?.content || '';
 
   return {
     groupJid,
