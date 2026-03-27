@@ -1,26 +1,49 @@
 import cron from 'node-cron';
 import { config } from './config';
-import { getMessagesSince, getMonitoredGroups, getGroupName, getAllUsers } from './database';
+import { getMessagesSince, getMonitoredGroups, getMonitoredGroupsWithNames, getGroupName, getAllUsers } from './database';
 import { summarizeGroup } from './summarizer';
 import { sendGroupSummaryEmail } from './email';
 
-async function runSummaryForUser(userId: number, emailTo: string): Promise<void> {
+export interface GroupProgress {
+  group_name: string;
+  group_jid: string;
+  status: 'processing' | 'done' | 'skipped' | 'error';
+  message_count?: number;
+  error?: string;
+}
+
+async function runSummaryForUser(
+  userId: number,
+  emailTo: string,
+  onProgress?: (progress: GroupProgress) => void
+): Promise<void> {
   const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-  const groups = getMonitoredGroups(userId);
+  const groups = getMonitoredGroupsWithNames(userId);
 
   if (groups.length === 0) return;
 
-  for (const groupJid of groups) {
+  for (const group of groups) {
+    const groupName = group.group_name;
+    const groupJid = group.group_jid;
+
+    if (onProgress) onProgress({ group_name: groupName, group_jid: groupJid, status: 'processing' });
+
     try {
       const messages = getMessagesSince(userId, groupJid, since);
-      const groupName = getGroupName(userId, groupJid);
-
       console.log('[scheduler] User ' + userId + ' group "' + groupName + '": ' + messages.length + ' messages');
+
+      if (messages.length === 0) {
+        if (onProgress) onProgress({ group_name: groupName, group_jid: groupJid, status: 'skipped', message_count: 0 });
+        continue;
+      }
 
       const summary = await summarizeGroup(groupName, groupJid, messages);
       await sendGroupSummaryEmail(userId, emailTo, summary);
+
+      if (onProgress) onProgress({ group_name: groupName, group_jid: groupJid, status: 'done', message_count: messages.length });
     } catch (err) {
-      console.error('[scheduler] Error processing group ' + groupJid + ' for user ' + userId + ':', err);
+      console.error('[scheduler] Error processing group ' + groupJid + ':', err);
+      if (onProgress) onProgress({ group_name: groupName, group_jid: groupJid, status: 'error', error: String(err) });
     }
   }
 }

@@ -229,13 +229,32 @@ router.post('/api/groups/remove', (req: Request, res: Response) => {
   res.json({ ok: true });
 });
 
-// ============ IMPORT HISTORY ============
+// ============ IMPORT HISTORY (SSE) ============
 
-router.post('/api/import-history', async (req: Request, res: Response) => {
+router.get('/api/import-history', async (req: Request, res: Response) => {
   const user = (req as any).user as User;
-  const { group_jid, group_name } = req.body;
-  const count = await importGroupHistory(user.id, user.instance_name, group_jid, group_name || group_jid);
-  res.json({ ok: true, imported: count });
+  const groupJid = req.query.group_jid as string;
+  const groupName = req.query.group_name as string;
+
+  res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' });
+
+  const count = await importGroupHistory(user.id, user.instance_name, groupJid, groupName || groupJid);
+  res.write('data: ' + JSON.stringify({ status: 'done', imported: count }) + '\n\n');
+  res.end();
+});
+
+// ============ TRIGGER (SSE) ============
+
+router.get('/api/trigger-stream', async (req: Request, res: Response) => {
+  const user = (req as any).user as User;
+  res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' });
+
+  await runSummaryForUser(user.id, user.email_to, (progress) => {
+    res.write('data: ' + JSON.stringify(progress) + '\n\n');
+  });
+
+  res.write('data: ' + JSON.stringify({ status: 'complete' }) + '\n\n');
+  res.end();
 });
 
 // ============ SETTINGS ============
@@ -383,7 +402,7 @@ function dashboardPage(user: User): string {
 <div class="card"><h2>Grupos Monitorados</h2><ul class="group-list" id="monitored-list"><li class="loading">Carregando...</li></ul></div>
 <div class="card"><h2>Grupos Disponiveis</h2><p style="font-size:13px;color:#8696a0;margin-bottom:12px">Selecione os grupos que deseja monitorar</p><div style="display:flex;gap:12px;margin-bottom:12px"><input type="text" id="group-filter" placeholder="Filtrar grupos..." oninput="filterGroups()" style="flex:1" /><button class="btn btn-outline" onclick="loadAvailableGroups()">Atualizar lista</button></div><div id="available-list" style="max-height:400px;overflow-y:auto"><div class="loading">Clique em "Atualizar lista" apos conectar o WhatsApp</div></div></div>
 <div class="card"><h2>Configuracoes</h2><div class="settings-row"><label>Horario do resumo</label><select id="cron-hour" style="width:80px">${Array.from({length:24},(_,i)=>'<option value="'+i+'">'+String(i).padStart(2,'0')+':00</option>').join('')}</select></div><div class="settings-row"><label>Email destino</label><input type="email" id="email-to" placeholder="seu@email.com" /></div><button class="btn btn-primary" onclick="saveSettings()">Salvar configuracoes</button><div class="msg" id="settings-msg"></div></div>
-<div class="card"><h2>Envio Manual</h2><p style="font-size:13px;color:#8696a0;margin-bottom:12px">Envia o resumo das ultimas 24h agora</p><button class="btn btn-primary" id="btn-trigger" onclick="triggerSummary()">Enviar resumo agora</button><div class="msg" id="trigger-msg"></div></div>
+<div class="card"><h2>Envio Manual</h2><p style="font-size:13px;color:#8696a0;margin-bottom:12px">Envia o resumo das ultimas 24h agora</p><button class="btn btn-primary" id="btn-trigger" onclick="triggerSummary()">Enviar resumo agora</button><div id="trigger-progress" style="margin-top:12px"></div></div>
 </div>
 <script>
 async function api(path,opts){const r=await fetch('/admin'+path,{...opts,headers:{'Content-Type':'application/json',...opts?.headers}});return r.json()}
@@ -396,11 +415,11 @@ let cachedGroups=[],cachedMonitoredJids=new Set();
 async function loadAvailableGroups(){const c=document.getElementById('available-list');c.innerHTML='<div class="loading">Carregando...</div>';document.getElementById('group-filter').value='';try{const d=await api('/api/groups/available');cachedGroups=Array.isArray(d)?d:[];const m=await api('/api/groups/monitored');cachedMonitoredJids=new Set(m.map(g=>g.group_jid));if(!cachedGroups.length){c.innerHTML='<div class="loading">Nenhum grupo encontrado.</div>';return}renderGroups(cachedGroups)}catch{c.innerHTML='<div class="loading">Erro. Conecte o WhatsApp primeiro.</div>'}}
 function renderGroups(groups){const c=document.getElementById('available-list');if(!groups.length){c.innerHTML='<div class="loading">Nenhum grupo corresponde ao filtro.</div>';return}c.innerHTML=groups.map(g=>{const jid=g.id||g.jid;const name=g.subject||g.name||jid;const mon=cachedMonitoredJids.has(jid);return'<div class="available-group"><div><div class="group-name">'+name+'</div><div class="group-jid">'+jid+'</div></div>'+(mon?'<button class="btn btn-outline" disabled>Ja adicionado</button>':'<button class="btn btn-primary" onclick="addGroup(\\''+jid+'\\',\\''+name.replace(/'/g,'')+'\\')" >Adicionar</button>')+'</div>'}).join('')}
 function filterGroups(){const q=document.getElementById('group-filter').value.toLowerCase();if(!q){renderGroups(cachedGroups);return}renderGroups(cachedGroups.filter(g=>{const n=(g.subject||g.name||'').toLowerCase();const j=(g.id||g.jid||'').toLowerCase();return n.includes(q)||j.includes(q)}))}
-async function addGroup(jid,name){await api('/api/groups/add',{method:'POST',body:JSON.stringify({group_jid:jid,group_name:name})});await loadMonitoredGroups();loadAvailableGroups();api('/api/import-history',{method:'POST',body:JSON.stringify({group_jid:jid,group_name:name})})}
+async function addGroup(jid,name){await api('/api/groups/add',{method:'POST',body:JSON.stringify({group_jid:jid,group_name:name})});await loadMonitoredGroups();loadAvailableGroups();const sid='s-'+jid.replace(/[^a-zA-Z0-9]/g,'');const el=document.getElementById(sid);if(el)el.innerHTML='<span style="color:#f0b429">Importando historico...</span>';const es=new EventSource('/admin/api/import-history?group_jid='+encodeURIComponent(jid)+'&group_name='+encodeURIComponent(name));es.onmessage=(e)=>{const d=JSON.parse(e.data);if(d.status==='done'){es.close();if(el){if(d.imported>0){el.innerHTML='<span style="color:#00a884">'+d.imported+' mensagens importadas</span>'}else{el.innerHTML='<span style="color:#8696a0">Sem mensagens nas ultimas 24h</span>'}setTimeout(()=>{if(el)el.innerHTML=''},10000)}}};es.onerror=()=>{es.close();if(el)el.innerHTML=''}}
 async function removeGroup(jid){if(!confirm('Remover este grupo?'))return;await api('/api/groups/remove',{method:'POST',body:JSON.stringify({group_jid:jid})});loadMonitoredGroups();loadAvailableGroups()}
 async function loadSettings(){const d=await api('/api/settings');document.getElementById('cron-hour').value=parseInt(d.summary_cron?.split(' ')[1]||'23');document.getElementById('email-to').value=d.email_to||''}
 async function saveSettings(){const h=document.getElementById('cron-hour').value;const e=document.getElementById('email-to').value;await api('/api/settings',{method:'POST',body:JSON.stringify({summary_cron:'0 '+h+' * * *',email_to:e})});const m=document.getElementById('settings-msg');m.className='msg success';m.textContent='Salvo! Reinicie o app para aplicar o novo horario.';setTimeout(()=>m.style.display='none',5000)}
-async function triggerSummary(){const btn=document.getElementById('btn-trigger');const m=document.getElementById('trigger-msg');btn.disabled=true;btn.textContent='Enviando...';try{const d=await api('/api/trigger',{method:'POST'});m.className='msg success';m.textContent=d.message||'Resumo enviado!'}catch{m.className='msg error';m.textContent='Erro ao enviar.'}btn.disabled=false;btn.textContent='Enviar resumo agora';setTimeout(()=>m.style.display='none',5000)}
+async function triggerSummary(){const btn=document.getElementById('btn-trigger');const prog=document.getElementById('trigger-progress');btn.disabled=true;btn.textContent='Enviando...';prog.innerHTML='';const es=new EventSource('/admin/api/trigger-stream');es.onmessage=(e)=>{const d=JSON.parse(e.data);if(d.status==='complete'){es.close();btn.disabled=false;btn.textContent='Enviar resumo agora';return}const icon=d.status==='processing'?'<span class="status-dot yellow" style="display:inline-block;margin-right:8px;animation:pulse 1s infinite"></span>':d.status==='done'?'<span class="status-dot green" style="display:inline-block;margin-right:8px"></span>':d.status==='skipped'?'<span style="color:#8696a0;margin-right:8px">--</span>':'<span class="status-dot red" style="display:inline-block;margin-right:8px"></span>';const label=d.status==='processing'?'Resumindo...':d.status==='done'?'Enviado ('+d.message_count+' msgs)':d.status==='skipped'?'Sem mensagens':'Erro';const elId='tg-'+d.group_jid.replace(/[^a-zA-Z0-9]/g,'');const existing=document.getElementById(elId);const html='<div id="'+elId+'" style="padding:6px 0;font-size:13px">'+icon+'<strong>'+d.group_name+'</strong> — '+label+'</div>';if(existing){existing.outerHTML=html}else{prog.innerHTML+=html}};es.onerror=()=>{es.close();btn.disabled=false;btn.textContent='Enviar resumo agora'}}
 async function logout(){await api('/api/logout',{method:'POST'});window.location.href='/admin/login'}
 checkConnection();loadMonitoredGroups();loadSettings();
 </script></body></html>`;
