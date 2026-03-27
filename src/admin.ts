@@ -378,6 +378,23 @@ function dashboardPage(): string {
       }
     }
 
+    let connPollInterval = null;
+
+    function startConnectionPolling() {
+      if (connPollInterval) clearInterval(connPollInterval);
+      connPollInterval = setInterval(async () => {
+        const data = await api('/api/instance/status');
+        const state = data?.instance?.state || data?.state || 'unknown';
+        if (state === 'open') {
+          clearInterval(connPollInterval);
+          connPollInterval = null;
+          document.getElementById('qr-area').style.display = 'none';
+          checkConnection();
+          loadAvailableGroups();
+        }
+      }, 5000);
+    }
+
     async function connectWhatsApp() {
       const btn = document.getElementById('btn-connect');
       btn.disabled = true;
@@ -396,12 +413,12 @@ function dashboardPage(): string {
           area.innerHTML = '<p>Nao foi possivel gerar QR Code. Verifique se a Evolution API esta rodando.</p>';
           area.style.display = 'block';
         }
+        startConnectionPolling();
       } catch (err) {
         alert('Erro: ' + err.message);
       }
       btn.disabled = false;
       btn.textContent = 'Conectar WhatsApp';
-      setTimeout(checkConnection, 15000);
     }
 
     async function loadMonitoredGroups() {
