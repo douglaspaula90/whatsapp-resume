@@ -7,6 +7,7 @@ import {
   removeMonitoredGroup,
   getSetting,
   setSetting,
+  saveMessage,
 } from './database';
 import { runDailySummary } from './scheduler';
 
@@ -137,13 +138,17 @@ router.get('/api/groups/monitored', (_req: Request, res: Response) => {
   res.json(groups);
 });
 
-router.post('/api/groups/add', (req: Request, res: Response) => {
+router.post('/api/groups/add', async (req: Request, res: Response) => {
   const { group_jid, group_name } = req.body;
   if (!group_jid) {
     res.status(400).json({ error: 'group_jid required' });
     return;
   }
   addMonitoredGroup(group_jid, group_name || group_jid);
+
+  // Import last 24h of messages for this group
+  importGroupHistory(group_jid, group_name || group_jid)
+    .catch(err => console.error('[admin] History import error:', err));
 
   // Configure webhook for this instance
   configureWebhook().catch(err => console.error('[admin] Webhook config error:', err));
@@ -175,6 +180,28 @@ router.post('/api/settings', (req: Request, res: Response) => {
   res.json({ ok: true });
 });
 
+// --- API: Import history for a single group (returns count) ---
+router.post('/api/import-history', async (req: Request, res: Response) => {
+  const { group_jid, group_name } = req.body;
+  if (group_jid) {
+    const count = await importGroupHistory(group_jid, group_name || group_jid);
+    res.json({ ok: true, group_jid, group_name, imported: count });
+    return;
+  }
+  // If no group specified, import all
+  const groups = getMonitoredGroupsWithNames();
+  if (!groups.length) {
+    res.json({ ok: false, message: 'Nenhum grupo monitorado.' });
+    return;
+  }
+  const results: { group_name: string; imported: number }[] = [];
+  for (const g of groups) {
+    const count = await importGroupHistory(g.group_jid, g.group_name);
+    results.push({ group_name: g.group_name, imported: count });
+  }
+  res.json({ ok: true, results });
+});
+
 // --- API: Trigger ---
 router.post('/api/trigger', async (_req: Request, res: Response) => {
   try {
@@ -184,6 +211,79 @@ router.post('/api/trigger', async (_req: Request, res: Response) => {
     res.status(500).json({ error: String(err) });
   }
 });
+
+// --- History import helper ---
+async function importGroupHistory(groupJid: string, groupName: string): Promise<number> {
+  console.log('[import] Importing 24h history for ' + groupName + '...');
+  const since = Date.now() - 24 * 60 * 60 * 1000;
+
+  try {
+    const response = await fetch(
+      config.evolution.apiUrl + '/chat/findMessages/' + config.evolution.instanceName,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'apikey': config.evolution.apiKey,
+        },
+        body: JSON.stringify({
+          where: {
+            key: { remoteJid: groupJid },
+          },
+        }),
+      }
+    );
+
+    const data = await response.json() as Array<{
+      key?: { remoteJid?: string; fromMe?: boolean; participant?: string };
+      pushName?: string;
+      message?: { conversation?: string; extendedTextMessage?: { text?: string } };
+      messageTimestamp?: number | string;
+      messageType?: string;
+    }>;
+
+    if (!Array.isArray(data)) {
+      console.log('[import] Unexpected response format for ' + groupName);
+      return 0;
+    }
+
+    let imported = 0;
+    for (const msg of data) {
+      if (!msg.key || !msg.message) continue;
+      if (msg.key.fromMe) continue;
+
+      const content = msg.message.conversation || msg.message.extendedTextMessage?.text;
+      if (!content) continue;
+
+      const ts = typeof msg.messageTimestamp === 'number'
+        ? msg.messageTimestamp * 1000
+        : parseInt(String(msg.messageTimestamp || '0'), 10) * 1000;
+
+      if (ts < since) continue;
+
+      try {
+        saveMessage({
+          group_jid: groupJid,
+          group_name: groupName,
+          sender_jid: msg.key.participant || groupJid,
+          sender_name: msg.pushName || 'Desconhecido',
+          content,
+          message_type: msg.messageType || 'text',
+          timestamp: new Date(ts).toISOString(),
+        });
+        imported++;
+      } catch {
+        // Skip duplicates
+      }
+    }
+
+    console.log('[import] Imported ' + imported + ' messages for ' + groupName);
+    return imported;
+  } catch (err) {
+    console.error('[import] Error importing history for ' + groupName + ':', err);
+    return 0;
+  }
+}
 
 // --- Webhook config helper ---
 async function configureWebhook(): Promise<void> {
@@ -300,6 +400,7 @@ function dashboardPage(): string {
     .msg.success { background: #00a88422; color: #00a884; display: block; }
     .msg.error { background: #ff6b6b22; color: #ff6b6b; display: block; }
     .loading { color: #8696a0; font-size: 14px; padding: 12px; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
   </style>
 </head>
 <body>
@@ -316,6 +417,12 @@ function dashboardPage(): string {
       <div style="margin-top:12px;">
         <button class="btn btn-primary" id="btn-connect" onclick="connectWhatsApp()">Conectar WhatsApp</button>
       </div>
+    </div>
+
+    <!-- Import Progress -->
+    <div class="card" id="import-card" style="display:none;">
+      <h2>Importando historico</h2>
+      <div id="import-progress"></div>
     </div>
 
     <!-- Monitored Groups -->
@@ -503,9 +610,28 @@ function dashboardPage(): string {
     }
 
     async function addGroup(jid, name) {
+      // Show import progress card
+      const importCard = document.getElementById('import-card');
+      const importProgress = document.getElementById('import-progress');
+      importCard.style.display = 'block';
+      importProgress.innerHTML = '<div style="padding:8px;"><span class="status-dot yellow" style="display:inline-block;margin-right:8px;animation:pulse 1s infinite;"></span> Adicionando <strong>' + name + '</strong> e importando historico das ultimas 24h...</div>';
+
       await api('/api/groups/add', { method: 'POST', body: JSON.stringify({ group_jid: jid, group_name: name }) });
       loadMonitoredGroups();
       loadAvailableGroups();
+
+      // Wait for import to finish
+      const result = await api('/api/import-history', { method: 'POST', body: JSON.stringify({ group_jid: jid, group_name: name }) });
+      const count = result?.imported || 0;
+      importProgress.innerHTML = '<div style="padding:8px;"><span class="status-dot green" style="display:inline-block;margin-right:8px;"></span> <strong>' + name + '</strong>: ' + count + ' mensagens importadas</div>' + importProgress.innerHTML.replace(/<div[^>]*>.*?' + name + '.*?<\\/div>/, '');
+
+      // Hide after 10 seconds if no more imports
+      setTimeout(() => {
+        if (!importProgress.querySelector('.yellow')) {
+          importCard.style.display = 'none';
+          importProgress.innerHTML = '';
+        }
+      }, 10000);
     }
 
     async function removeGroup(jid) {
