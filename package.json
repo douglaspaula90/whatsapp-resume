@@ -12,12 +12,14 @@
     "openai": "^4.73.0",
     "better-sqlite3": "^11.7.0",
     "dotenv": "^16.4.0",
+    "cookie-parser": "^1.4.7",
     "express": "^4.21.0",
     "node-cron": "^3.0.3",
     "resend": "^4.1.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.12",
+    "@types/cookie-parser": "^1.4.7",
     "@types/express": "^5.0.0",
     "@types/node": "^22.10.0",
     "@types/node-cron": "^3.0.11",

@@ -47,6 +47,17 @@ export function initDatabase(): void {
       message_id TEXT,
       last_sent_at TEXT
     );
+
+    CREATE TABLE IF NOT EXISTS monitored_groups (
+      group_jid TEXT PRIMARY KEY,
+      group_name TEXT NOT NULL,
+      added_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
   `);
 }
 
@@ -68,17 +79,59 @@ export function getMessagesSince(groupJid: string, since: string): Message[] {
 }
 
 export function getMonitoredGroups(): string[] {
-  return config.whatsappGroups;
+  const stmt = db.prepare('SELECT group_jid FROM monitored_groups');
+  const rows = stmt.all() as { group_jid: string }[];
+  return rows.map(r => r.group_jid);
+}
+
+export function getMonitoredGroupsWithNames(): { group_jid: string; group_name: string }[] {
+  const stmt = db.prepare('SELECT group_jid, group_name FROM monitored_groups');
+  return stmt.all() as { group_jid: string; group_name: string }[];
+}
+
+export function addMonitoredGroup(groupJid: string, groupName: string): void {
+  const stmt = db.prepare(`
+    INSERT INTO monitored_groups (group_jid, group_name)
+    VALUES (@groupJid, @groupName)
+    ON CONFLICT(group_jid) DO UPDATE SET group_name = @groupName
+  `);
+  stmt.run({ groupJid, groupName });
+}
+
+export function removeMonitoredGroup(groupJid: string): void {
+  const stmt = db.prepare('DELETE FROM monitored_groups WHERE group_jid = @groupJid');
+  stmt.run({ groupJid });
+}
+
+export function getSetting(key: string): string | undefined {
+  const stmt = db.prepare('SELECT value FROM settings WHERE key = @key');
+  const row = stmt.get({ key }) as { value: string } | undefined;
+  return row?.value;
+}
+
+export function setSetting(key: string, value: string): void {
+  const stmt = db.prepare(`
+    INSERT INTO settings (key, value) VALUES (@key, @value)
+    ON CONFLICT(key) DO UPDATE SET value = @value
+  `);
+  stmt.run({ key, value });
 }
 
 export function getGroupName(groupJid: string): string {
   const stmt = db.prepare(`
+    SELECT group_name FROM monitored_groups
+    WHERE group_jid = @groupJid
+  `);
+  const row = stmt.get({ groupJid }) as { group_name: string } | undefined;
+  if (row) return row.group_name;
+
+  const msgStmt = db.prepare(`
     SELECT group_name FROM messages
     WHERE group_jid = @groupJid
     ORDER BY id DESC LIMIT 1
   `);
-  const row = stmt.get({ groupJid }) as { group_name: string } | undefined;
-  return row?.group_name || groupJid;
+  const msgRow = msgStmt.get({ groupJid }) as { group_name: string } | undefined;
+  return msgRow?.group_name || groupJid;
 }
 
 export function getEmailThread(groupJid: string): { message_id: string | null; group_name: string } | undefined {

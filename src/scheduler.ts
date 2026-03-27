@@ -1,6 +1,6 @@
 import cron from 'node-cron';
 import { config } from './config';
-import { getMessagesSince, getMonitoredGroups, getGroupName } from './database';
+import { getMessagesSince, getMonitoredGroups, getGroupName, getSetting } from './database';
 import { summarizeGroup } from './summarizer';
 import { sendGroupSummaryEmail } from './email';
 
@@ -9,6 +9,11 @@ async function runDailySummary(): Promise<void> {
 
   const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
   const groups = getMonitoredGroups();
+
+  if (groups.length === 0) {
+    console.log('[scheduler] No monitored groups configured. Skipping.');
+    return;
+  }
 
   for (const groupJid of groups) {
     try {
@@ -28,14 +33,14 @@ async function runDailySummary(): Promise<void> {
 }
 
 export function startScheduler(): void {
-  console.log('[scheduler] Cron scheduled: ' + config.summaryCron);
+  const cronExpr = getSetting('summary_cron') || config.summaryCron;
+  console.log('[scheduler] Cron scheduled: ' + cronExpr);
 
-  cron.schedule(config.summaryCron, () => {
+  cron.schedule(cronExpr, () => {
     runDailySummary().catch(err => {
       console.error('[scheduler] Fatal error:', err);
     });
   });
 }
 
-// Export for manual trigger (useful for testing)
 export { runDailySummary };

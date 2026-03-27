@@ -18,7 +18,6 @@ export const config = {
     apiKey: required('EVOLUTION_API_KEY'),
     instanceName: optional('EVOLUTION_INSTANCE_NAME', 'whatsapp-resume'),
   },
-  whatsappGroups: required('WHATSAPP_GROUPS').split(',').map(g => g.trim()),
   openai: {
     apiKey: required('OPENAI_API_KEY'),
   },
@@ -26,6 +25,11 @@ export const config = {
     from: required('EMAIL_FROM'),
     to: required('EMAIL_TO'),
     resendApiKey: required('RESEND_API_KEY'),
+  },
+  admin: {
+    user: optional('ADMIN_USER', 'admin'),
+    password: required('ADMIN_PASSWORD'),
+    secret: optional('ADMIN_SECRET', 'whatsapp-resume-secret-' + Date.now()),
   },
   summaryCron: optional('SUMMARY_CRON', '0 23 * * *'),
   port: parseInt(optional('PORT', '3000'), 10),
