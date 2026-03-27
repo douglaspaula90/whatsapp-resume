@@ -36,19 +36,18 @@ function buildEmailHtml(summary: GroupSummary): string {
   `;
 }
 
-export async function sendGroupSummaryEmail(summary: GroupSummary): Promise<void> {
+export async function sendGroupSummaryEmail(userId: number, emailTo: string, summary: GroupSummary): Promise<void> {
   if (summary.messageCount === 0) {
     console.log('[email] Skipping ' + summary.groupName + ' - no messages');
     return;
   }
 
-  const thread = getEmailThread(summary.groupJid);
+  const thread = getEmailThread(userId, summary.groupJid);
   const subject = 'Resumo WhatsApp: ' + summary.groupName;
   const html = buildEmailHtml(summary);
 
   const headers: Record<string, string> = {};
 
-  // If there is an existing thread, reply to it to keep the email thread going
   if (thread?.message_id) {
     headers['In-Reply-To'] = thread.message_id;
     headers['References'] = thread.message_id;
@@ -56,16 +55,31 @@ export async function sendGroupSummaryEmail(summary: GroupSummary): Promise<void
 
   const result = await resend.emails.send({
     from: config.email.from,
-    to: [config.email.to],
+    to: [emailTo],
     subject,
     html,
     headers,
   });
 
   if (result.data?.id) {
-    // Resend returns its own ID; for threading we use the Message-ID format
     const messageId = '<' + result.data.id + '@resend.dev>';
-    saveEmailThread(summary.groupJid, summary.groupName, messageId);
-    console.log('[email] Sent summary for ' + summary.groupName + ' (id: ' + result.data.id + ')');
+    saveEmailThread(userId, summary.groupJid, summary.groupName, messageId);
+    console.log('[email] Sent summary for ' + summary.groupName + ' to ' + emailTo);
   }
+}
+
+export async function sendPasswordResetEmail(email: string, resetUrl: string): Promise<void> {
+  await resend.emails.send({
+    from: config.email.from,
+    to: [email],
+    subject: 'WhatsApp Resume - Redefinir senha',
+    html: `
+      <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 500px; margin: 0 auto; padding: 20px;">
+        <h2 style="color: #075e54;">Redefinir senha</h2>
+        <p>Voce solicitou a redefinicao de senha. Clique no botao abaixo:</p>
+        <a href="${resetUrl}" style="display: inline-block; padding: 12px 24px; background: #00a884; color: white; text-decoration: none; border-radius: 8px; font-weight: 600; margin: 16px 0;">Redefinir senha</a>
+        <p style="font-size: 13px; color: #666;">Este link expira em 1 hora. Se voce nao solicitou, ignore este email.</p>
+      </div>
+    `,
+  });
 }

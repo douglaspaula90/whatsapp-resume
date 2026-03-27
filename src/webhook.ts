@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { saveMessage, getMonitoredGroups } from './database';
+import { saveMessage, getMonitoredGroups, getUserByInstanceName } from './database';
 
 const router = Router();
 
@@ -51,6 +51,7 @@ router.post('/webhook/messages', (req: Request, res: Response) => {
   }
 
   const { data } = payload;
+  const instanceName = payload.instance;
   const remoteJid = data.key.remoteJid;
 
   // Only process group messages
@@ -59,8 +60,15 @@ router.post('/webhook/messages', (req: Request, res: Response) => {
     return;
   }
 
-  // Only process monitored groups
-  const monitoredGroups = getMonitoredGroups();
+  // Find user by instance name
+  const user = getUserByInstanceName(instanceName);
+  if (!user) {
+    res.sendStatus(200);
+    return;
+  }
+
+  // Only process monitored groups for this user
+  const monitoredGroups = getMonitoredGroups(user.id);
   if (!monitoredGroups.includes(remoteJid)) {
     res.sendStatus(200);
     return;
@@ -83,8 +91,9 @@ router.post('/webhook/messages', (req: Request, res: Response) => {
     : new Date(parseInt(data.messageTimestamp || '0', 10) * 1000).toISOString();
 
   saveMessage({
+    user_id: user.id,
     group_jid: remoteJid,
-    group_name: remoteJid, // Will be updated by group metadata fetch
+    group_name: remoteJid,
     sender_jid: data.key.participant || remoteJid,
     sender_name: data.pushName || 'Desconhecido',
     content,
@@ -92,7 +101,7 @@ router.post('/webhook/messages', (req: Request, res: Response) => {
     timestamp,
   });
 
-  console.log('[webhook] Message saved from ' + (data.pushName || 'unknown') + ' in ' + remoteJid);
+  console.log('[webhook] Message saved from ' + (data.pushName || 'unknown') + ' for user ' + user.email);
   res.sendStatus(200);
 });
 
