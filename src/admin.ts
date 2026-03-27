@@ -316,8 +316,8 @@ async function importGroupHistory(userId: number, instanceName: string, groupJid
       const messages = data?.messages;
       if (!messages?.records) break;
 
-      totalPages = messages.pages || 1;
-      let foundOldMessage = false;
+      totalPages = Math.min(messages.pages || 1, 20); // max 20 pages to avoid infinite loops
+      let oldCount = 0;
 
       for (const msg of messages.records) {
         if (!msg.key || !msg.message) continue;
@@ -325,13 +325,14 @@ async function importGroupHistory(userId: number, instanceName: string, groupJid
         const content = msg.message.conversation || msg.message.extendedTextMessage?.text;
         if (!content) continue;
         const ts = typeof msg.messageTimestamp === 'number' ? msg.messageTimestamp * 1000 : parseInt(String(msg.messageTimestamp || '0'), 10) * 1000;
-        if (ts < since) { foundOldMessage = true; continue; }
+        if (ts < since) { oldCount++; continue; }
         try {
           saveMessage({ user_id: userId, group_jid: groupJid, group_name: groupName, sender_jid: msg.key.participant || groupJid, sender_name: msg.pushName || 'Desconhecido', content, message_type: msg.messageType || 'text', timestamp: new Date(ts).toISOString() });
           imported++;
         } catch { /* skip duplicates */ }
       }
-      if (foundOldMessage) break;
+      // Only stop if ALL messages on this page were old (no recent ones mixed in)
+      if (oldCount > 0 && imported === 0 && page > 1) break;
       page++;
     }
     console.log('[import] Imported ' + imported + ' messages for ' + groupName);
