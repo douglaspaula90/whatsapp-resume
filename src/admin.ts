@@ -109,11 +109,24 @@ router.get('/api/instance/qrcode', async (_req: Request, res: Response) => {
 router.get('/api/groups/available', async (_req: Request, res: Response) => {
   try {
     const response = await fetch(
-      config.evolution.apiUrl + '/group/fetchAllGroups/' + config.evolution.instanceName,
-      { headers: { 'apikey': config.evolution.apiKey } }
+      config.evolution.apiUrl + '/chat/findChats/' + config.evolution.instanceName,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'apikey': config.evolution.apiKey,
+        },
+        body: JSON.stringify({}),
+      }
     );
-    const data = await response.json();
-    res.json(data);
+    const data = await response.json() as Array<{ remoteJid?: string; pushName?: string; name?: string }>;
+    // Filter only groups (@g.us)
+    const groups = Array.isArray(data)
+      ? data
+          .filter(c => c.remoteJid?.endsWith('@g.us'))
+          .map(c => ({ id: c.remoteJid, subject: c.pushName || c.name || c.remoteJid }))
+      : [];
+    res.json(groups);
   } catch (err) {
     res.status(500).json({ error: String(err) });
   }
