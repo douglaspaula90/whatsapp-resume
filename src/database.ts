@@ -1,4 +1,6 @@
 import Database from 'better-sqlite3';
+import fs from 'fs';
+import path from 'path';
 import { config } from './config';
 
 export interface Message {
@@ -16,6 +18,10 @@ export interface Message {
 let db: Database.Database;
 
 export function initDatabase(): void {
+  const dir = path.dirname(config.dbPath);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
   db = new Database(config.dbPath);
   db.pragma('journal_mode = WAL');
 
