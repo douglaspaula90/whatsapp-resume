@@ -330,8 +330,11 @@ function dashboardPage(): string {
     <div class="card">
       <h2>Grupos Disponiveis</h2>
       <p style="font-size:13px;color:#8696a0;margin-bottom:12px;">Selecione os grupos que deseja monitorar</p>
-      <button class="btn btn-outline" onclick="loadAvailableGroups()" style="margin-bottom:12px;">Atualizar lista</button>
-      <div id="available-list">
+      <div style="display:flex;gap:12px;margin-bottom:12px;">
+        <input type="text" id="group-filter" placeholder="Filtrar grupos..." oninput="filterGroups()" style="flex:1;" />
+        <button class="btn btn-outline" onclick="loadAvailableGroups()">Atualizar lista</button>
+      </div>
+      <div id="available-list" style="max-height:400px;overflow-y:auto;">
         <div class="loading">Clique em "Atualizar lista" apos conectar o WhatsApp</div>
       </div>
     </div>
@@ -447,32 +450,56 @@ function dashboardPage(): string {
       ).join('');
     }
 
+    let cachedGroups = [];
+    let cachedMonitoredJids = new Set();
+
     async function loadAvailableGroups() {
       const container = document.getElementById('available-list');
       container.innerHTML = '<div class="loading">Carregando grupos...</div>';
+      document.getElementById('group-filter').value = '';
       try {
         const data = await api('/api/groups/available');
-        const groups = Array.isArray(data) ? data : (data?.groups || []);
+        cachedGroups = Array.isArray(data) ? data : (data?.groups || []);
         const monitored = await api('/api/groups/monitored');
-        const monitoredJids = new Set(monitored.map(g => g.group_jid));
+        cachedMonitoredJids = new Set(monitored.map(g => g.group_jid));
 
-        if (!groups.length) {
+        if (!cachedGroups.length) {
           container.innerHTML = '<div class="loading">Nenhum grupo encontrado. Conecte o WhatsApp primeiro.</div>';
           return;
         }
-        container.innerHTML = groups.map(g => {
-          const jid = g.id || g.jid;
-          const name = g.subject || g.name || jid;
-          const isMonitored = monitoredJids.has(jid);
-          return '<div class="available-group"><div><div class="group-name">' + name + '</div><div class="group-jid">' + jid + '</div></div>' +
-            (isMonitored
-              ? '<button class="btn btn-outline" disabled>Ja adicionado</button>'
-              : '<button class="btn btn-primary" onclick="addGroup(\\'' + jid + '\\', \\'' + name.replace(/'/g, '') + '\\')">Adicionar</button>') +
-            '</div>';
-        }).join('');
+        renderGroups(cachedGroups);
       } catch {
         container.innerHTML = '<div class="loading">Erro ao carregar grupos. Conecte o WhatsApp primeiro.</div>';
       }
+    }
+
+    function renderGroups(groups) {
+      const container = document.getElementById('available-list');
+      if (!groups.length) {
+        container.innerHTML = '<div class="loading">Nenhum grupo corresponde ao filtro.</div>';
+        return;
+      }
+      container.innerHTML = groups.map(g => {
+        const jid = g.id || g.jid;
+        const name = g.subject || g.name || jid;
+        const isMonitored = cachedMonitoredJids.has(jid);
+        return '<div class="available-group"><div><div class="group-name">' + name + '</div><div class="group-jid">' + jid + '</div></div>' +
+          (isMonitored
+            ? '<button class="btn btn-outline" disabled>Ja adicionado</button>'
+            : '<button class="btn btn-primary" onclick="addGroup(\\'' + jid + '\\', \\'' + name.replace(/'/g, '') + '\\')">Adicionar</button>') +
+          '</div>';
+      }).join('');
+    }
+
+    function filterGroups() {
+      const query = document.getElementById('group-filter').value.toLowerCase();
+      if (!query) { renderGroups(cachedGroups); return; }
+      const filtered = cachedGroups.filter(g => {
+        const name = (g.subject || g.name || '').toLowerCase();
+        const jid = (g.id || g.jid || '').toLowerCase();
+        return name.includes(query) || jid.includes(query);
+      });
+      renderGroups(filtered);
     }
 
     async function addGroup(jid, name) {
