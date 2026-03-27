@@ -213,71 +213,99 @@ router.post('/api/trigger', async (_req: Request, res: Response) => {
 });
 
 // --- History import helper ---
+interface EvolutionMessage {
+  key?: { remoteJid?: string; fromMe?: boolean; participant?: string };
+  pushName?: string;
+  message?: { conversation?: string; extendedTextMessage?: { text?: string } };
+  messageTimestamp?: number | string;
+  messageType?: string;
+}
+
+interface FindMessagesResponse {
+  messages?: {
+    total?: number;
+    pages?: number;
+    currentPage?: number;
+    records?: EvolutionMessage[];
+  };
+}
+
 async function importGroupHistory(groupJid: string, groupName: string): Promise<number> {
   console.log('[import] Importing 24h history for ' + groupName + '...');
   const since = Date.now() - 24 * 60 * 60 * 1000;
 
   try {
-    const response = await fetch(
-      config.evolution.apiUrl + '/chat/findMessages/' + config.evolution.instanceName,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'apikey': config.evolution.apiKey,
-        },
-        body: JSON.stringify({
-          where: {
-            key: { remoteJid: groupJid },
-          },
-        }),
-      }
-    );
-
-    const data = await response.json() as Array<{
-      key?: { remoteJid?: string; fromMe?: boolean; participant?: string };
-      pushName?: string;
-      message?: { conversation?: string; extendedTextMessage?: { text?: string } };
-      messageTimestamp?: number | string;
-      messageType?: string;
-    }>;
-
-    if (!Array.isArray(data)) {
-      console.log('[import] Unexpected response format for ' + groupName);
-      return 0;
-    }
-
     let imported = 0;
-    for (const msg of data) {
-      if (!msg.key || !msg.message) continue;
-      if (msg.key.fromMe) continue;
+    let page = 1;
+    let totalPages = 1;
 
-      const content = msg.message.conversation || msg.message.extendedTextMessage?.text;
-      if (!content) continue;
+    while (page <= totalPages) {
+      const response = await fetch(
+        config.evolution.apiUrl + '/chat/findMessages/' + config.evolution.instanceName,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'apikey': config.evolution.apiKey,
+          },
+          body: JSON.stringify({
+            where: {
+              key: { remoteJid: groupJid },
+            },
+            page,
+          }),
+        }
+      );
 
-      const ts = typeof msg.messageTimestamp === 'number'
-        ? msg.messageTimestamp * 1000
-        : parseInt(String(msg.messageTimestamp || '0'), 10) * 1000;
+      const data = await response.json() as FindMessagesResponse;
+      const messages = data?.messages;
 
-      if (ts < since) continue;
-
-      try {
-        saveMessage({
-          group_jid: groupJid,
-          group_name: groupName,
-          sender_jid: msg.key.participant || groupJid,
-          sender_name: msg.pushName || 'Desconhecido',
-          content,
-          message_type: msg.messageType || 'text',
-          timestamp: new Date(ts).toISOString(),
-        });
-        imported++;
-      } catch {
-        // Skip duplicates
+      if (!messages?.records) {
+        console.log('[import] No records in response for ' + groupName + ' page ' + page);
+        break;
       }
+
+      totalPages = messages.pages || 1;
+      let foundOldMessage = false;
+
+      for (const msg of messages.records) {
+        if (!msg.key || !msg.message) continue;
+        if (msg.key.fromMe) continue;
+
+        const content = msg.message.conversation || msg.message.extendedTextMessage?.text;
+        if (!content) continue;
+
+        const ts = typeof msg.messageTimestamp === 'number'
+          ? msg.messageTimestamp * 1000
+          : parseInt(String(msg.messageTimestamp || '0'), 10) * 1000;
+
+        if (ts < since) {
+          foundOldMessage = true;
+          continue;
+        }
+
+        try {
+          saveMessage({
+            group_jid: groupJid,
+            group_name: groupName,
+            sender_jid: msg.key.participant || groupJid,
+            sender_name: msg.pushName || 'Desconhecido',
+            content,
+            message_type: msg.messageType || 'text',
+            timestamp: new Date(ts).toISOString(),
+          });
+          imported++;
+        } catch {
+          // Skip duplicates
+        }
+      }
+
+      // If we found messages older than 24h, no need to fetch more pages
+      if (foundOldMessage) break;
+      page++;
     }
 
-    console.log('[import] Imported ' + imported + ' messages for ' + groupName);
+    console.log('[import] Imported ' + imported + ' messages for ' + groupName + ' (' + totalPages + ' pages scanned)');
     return imported;
   } catch (err) {
     console.error('[import] Error importing history for ' + groupName + ':', err);
@@ -419,12 +447,6 @@ function dashboardPage(): string {
       </div>
     </div>
 
-    <!-- Import Progress -->
-    <div class="card" id="import-card" style="display:none;">
-      <h2>Importando historico</h2>
-      <div id="import-progress"></div>
-    </div>
-
     <!-- Monitored Groups -->
     <div class="card">
       <h2>Grupos Monitorados</h2>
@@ -551,10 +573,12 @@ function dashboardPage(): string {
         list.innerHTML = '<li class="loading">Nenhum grupo monitorado. Adicione grupos abaixo.</li>';
         return;
       }
-      list.innerHTML = data.map(g =>
-        '<li><div><div class="group-name">' + g.group_name + '</div><div class="group-jid">' + g.group_jid + '</div></div>' +
-        '<button class="btn btn-danger" onclick="removeGroup(\\'' + g.group_jid + '\\')">Remover</button></li>'
-      ).join('');
+      list.innerHTML = data.map(g => {
+        const statusId = 'status-' + g.group_jid.replace(/[^a-zA-Z0-9]/g, '');
+        return '<li style="flex-wrap:wrap;"><div style="flex:1;"><div class="group-name">' + g.group_name + '</div><div class="group-jid">' + g.group_jid + '</div>' +
+          '<div id="' + statusId + '" style="font-size:12px;margin-top:4px;"></div>' +
+          '</div><button class="btn btn-danger" onclick="removeGroup(\\'' + g.group_jid + '\\')">Remover</button></li>';
+      }).join('');
     }
 
     let cachedGroups = [];
@@ -610,28 +634,24 @@ function dashboardPage(): string {
     }
 
     async function addGroup(jid, name) {
-      // Show import progress card
-      const importCard = document.getElementById('import-card');
-      const importProgress = document.getElementById('import-progress');
-      importCard.style.display = 'block';
-      importProgress.innerHTML = '<div style="padding:8px;"><span class="status-dot yellow" style="display:inline-block;margin-right:8px;animation:pulse 1s infinite;"></span> Adicionando <strong>' + name + '</strong> e importando historico das ultimas 24h...</div>';
-
       await api('/api/groups/add', { method: 'POST', body: JSON.stringify({ group_jid: jid, group_name: name }) });
-      loadMonitoredGroups();
+      await loadMonitoredGroups();
       loadAvailableGroups();
 
-      // Wait for import to finish
+      // Show importing status inline
+      const statusId = 'status-' + jid.replace(/[^a-zA-Z0-9]/g, '');
+      const statusEl = document.getElementById(statusId);
+      if (statusEl) {
+        statusEl.innerHTML = '<span style="color:#f0b429;"><span class="status-dot yellow" style="display:inline-block;margin-right:6px;animation:pulse 1s infinite;"></span>Importando historico (24h)...</span>';
+      }
+
+      // Import history
       const result = await api('/api/import-history', { method: 'POST', body: JSON.stringify({ group_jid: jid, group_name: name }) });
       const count = result?.imported || 0;
-      importProgress.innerHTML = '<div style="padding:8px;"><span class="status-dot green" style="display:inline-block;margin-right:8px;"></span> <strong>' + name + '</strong>: ' + count + ' mensagens importadas</div>' + importProgress.innerHTML.replace(/<div[^>]*>.*?' + name + '.*?<\\/div>/, '');
-
-      // Hide after 10 seconds if no more imports
-      setTimeout(() => {
-        if (!importProgress.querySelector('.yellow')) {
-          importCard.style.display = 'none';
-          importProgress.innerHTML = '';
-        }
-      }, 10000);
+      if (statusEl) {
+        statusEl.innerHTML = '<span style="color:#00a884;">' + count + ' mensagens importadas</span>';
+        setTimeout(() => { if (statusEl) statusEl.innerHTML = ''; }, 15000);
+      }
     }
 
     async function removeGroup(jid) {
